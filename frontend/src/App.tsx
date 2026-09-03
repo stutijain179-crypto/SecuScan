@@ -37,11 +37,12 @@ export function AppRoutes() {
     <Routes>
       {/* Public: the API-key sign-in entry. */}
       <Route path={routes.signIn} element={<SignIn />} />
+      {/* Emperor is a self-contained local workspace and does not require the scanner session. */}
+      <Route path={routes.dashboard} element={<Dashboard />} />
 
       {/* Everything else requires a valid backend session. */}
       <Route element={<ProtectedRoute />}>
         <Route element={<ShellLayout />}>
-          <Route path={routes.dashboard} element={<Dashboard />} />
           <Route path={routes.toolkit} element={<Toolkit />} />
           <Route path={routes.scanTool} element={<ToolConfig />} />
           <Route path={routes.findings} element={<Findings />} />
@@ -64,11 +65,11 @@ export default function App() {
       <I18nProvider>
         <ToastProvider>
           <ErrorBoundary>
-            <AuthProvider>
-              <Router>
+            <Router>
+              <AuthProvider>
                 <AppRoutes />
-              </Router>
-            </AuthProvider>
+              </AuthProvider>
+            </Router>
           </ErrorBoundary>
         </ToastProvider>
       </I18nProvider>

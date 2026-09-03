@@ -1,631 +1,151 @@
-import React, { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
-import { getDashboardSummary, getHealth, cancelTask } from '../api'
-import { ExecutiveStatsBar } from '../components/ExecutiveStatsBar'
-import { routePath, routes } from '../routes'
-import { formatBriefingDate, formatTaskInit, formatLocaleDate, formatLocaleTime } from '../utils/date'
+import React, { useMemo, useState } from 'react'
+import {
+  Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Circle,
+  Clock3, Filter, LayoutDashboard, Menu, MoreHorizontal, Pencil, Plus, Search,
+  SlidersHorizontal, Sparkles, Target, Trash2, X, Zap,
+} from 'lucide-react'
 
-type Finding = {
-  id: string
-  severity: string
-  title: string
-  target: string
-  discovered_at: string
-}
-
+type Status = 'AVAILABLE' | 'IN PROGRESS' | 'COMPLETED' | 'OVERDUE'
+type Priority = 'Low' | 'Medium' | 'High'
 type Task = {
-  id: string
-  plugin_id: string
-  tool_name: string
-  target: string
-  status: string
-  created_at: string
-  duration_seconds?: number | null
+  id: string; title: string; description: string; features: string[]; outcome: string
+  dueDate: string; status: Status; priority: Priority; progress: number; category: string
+}
+type Toast = { id: number; message: string; tone: 'success' | 'error' }
+
+const initialTasks: Task[] = [
+  { id: '1', title: 'Task Management Application', description: 'Develop a full-stack task management application for creating, updating and tracking tasks.', features: ['User authentication', 'CRUD operations', 'Task status tracking', 'Responsive design', 'API integration'], outcome: 'Learn full-stack application structure, API integration and dynamic data handling.', dueDate: '2026-09-12', status: 'IN PROGRESS', priority: 'High', progress: 65, category: 'Product' },
+  { id: '2', title: 'AI Resume Analyzer', description: 'Build a smart resume analyzer that turns experience into actionable career insights.', features: ['PDF parsing', 'Skill extraction', 'Feedback report'], outcome: 'Ship a useful AI workflow with a thoughtful user experience.', dueDate: '2026-09-18', status: 'AVAILABLE', priority: 'Medium', progress: 20, category: 'AI / ML' },
+  { id: '3', title: 'Portfolio Case Study', description: 'Document the process, decisions and measurable outcomes of a recent build.', features: ['Narrative structure', 'Visual polish', 'Public launch'], outcome: 'Create a credible proof of work for future opportunities.', dueDate: '2026-09-05', status: 'COMPLETED', priority: 'Low', progress: 100, category: 'Career' },
+  { id: '4', title: 'Learn Vector Databases', description: 'Explore semantic search patterns and build a small retrieval prototype.', features: ['Embeddings', 'Indexing', 'Evaluation'], outcome: 'Understand the foundations of modern retrieval systems.', dueDate: '2026-09-02', status: 'OVERDUE', priority: 'High', progress: 35, category: 'AI / ML' },
+]
+
+const storageKey = 'emperor-tasks'
+const today = new Date('2026-09-03T12:00:00')
+
+function readTasks(): Task[] {
+  try { const stored = localStorage.getItem(storageKey); return stored ? JSON.parse(stored) : initialTasks } catch { return initialTasks }
+}
+function saveTasks(tasks: Task[]) { localStorage.setItem(storageKey, JSON.stringify(tasks)) }
+function formatDate(value: string) { return new Date(`${value}T12:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) }
+function daysLeft(value: string) {
+  const days = Math.ceil((new Date(`${value}T12:00:00`).getTime() - today.getTime()) / 86400000)
+  return days < 0 ? `${Math.abs(days)} days overdue` : days === 0 ? 'Due today' : `${days} days left`
 }
 
-type Summary = {
-  total_findings: number
-  critical_findings: number
-  high_findings: number
-  medium_findings: number
-  low_findings: number
-  info_findings: number
-  last_scan_time: string | null
-  recent_findings: Finding[]
-  running_tasks: Task[]
-  recent_tasks: Task[]
-  scan_activity: { total: number; completed: number; running: number }
-}
-
-function asString(value: unknown, fallback = '') {
-  return typeof value === 'string' ? value : fallback
-}
-
-function asNumber(value: unknown, fallback = 0) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-function asOptionalNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-
-function normalizeSummary(data: Partial<Summary> | null | undefined): Summary {
-  const summary = data && typeof data === 'object' ? data : {}
-  const rawScanActivity = summary.scan_activity && typeof summary.scan_activity === 'object'
-    ? summary.scan_activity
-    : emptySummary.scan_activity
-
-  return {
-    total_findings: asNumber(summary.total_findings),
-    critical_findings: asNumber(summary.critical_findings),
-    high_findings: asNumber(summary.high_findings),
-    medium_findings: asNumber(summary.medium_findings),
-    low_findings: asNumber(summary.low_findings),
-    info_findings: asNumber(summary.info_findings),
-    last_scan_time: typeof summary.last_scan_time === 'string' ? summary.last_scan_time : null,
-    recent_findings: Array.isArray(summary.recent_findings)
-      ? summary.recent_findings.map((finding) => ({
-        id: asString(finding?.id),
-        severity: asString(finding?.severity, 'low'),
-        title: asString(finding?.title, 'Untitled finding'),
-        target: asString(finding?.target, 'Unknown target'),
-        discovered_at: asString(finding?.discovered_at),
-      }))
-      : [],
-    running_tasks: Array.isArray(summary.running_tasks)
-      ? summary.running_tasks.map((task) => ({
-        id: asString(task?.id),
-        plugin_id: asString(task?.plugin_id),
-        tool_name: asString(task?.tool_name, 'Unknown tool'),
-        target: asString(task?.target, 'Unknown target'),
-        status: asString(task?.status, 'unknown'),
-        created_at: asString(task?.created_at),
-        duration_seconds: asOptionalNumber(task?.duration_seconds),
-      }))
-      : [],
-    recent_tasks: Array.isArray(summary.recent_tasks)
-      ? summary.recent_tasks.map((task) => ({
-        id: asString(task?.id),
-        plugin_id: asString(task?.plugin_id),
-        tool_name: asString(task?.tool_name, 'Unknown tool'),
-        target: asString(task?.target, 'Unknown target'),
-        status: asString(task?.status, 'unknown'),
-        created_at: asString(task?.created_at),
-        duration_seconds: asOptionalNumber(task?.duration_seconds),
-      }))
-      : [],
-    scan_activity: {
-      total: asNumber(rawScanActivity.total),
-      completed: asNumber(rawScanActivity.completed),
-      running: asNumber(rawScanActivity.running),
-    },
-  }
-}
-
-const emptySummary: Summary = {
-  total_findings: 0,
-  critical_findings: 0,
-  high_findings: 0,
-  medium_findings: 0,
-  low_findings: 0,
-  info_findings: 0,
-  last_scan_time: null,
-  recent_findings: [],
-  running_tasks: [],
-  recent_tasks: [],
-  scan_activity: { total: 0, completed: 0, running: 0 },
-}
-
-
-function formatDuration(seconds?: number | null) {
-  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return 'N/A'
-  if (seconds < 60) return `${Math.round(seconds)}s`
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.round(seconds % 60)
-  return `${mins}m ${secs.toString().padStart(2, '0')}s`
-}
-
-function displayToolName(task: Task) {
-  const name = task.tool_name?.trim()
-  if (!name || name.toLowerCase() === 'history') {
-    return (task.plugin_id || 'scan').replace(/[-_]/g, ' ').toUpperCase()
-  }
-  return name.toUpperCase()
-}
-
-function getRiskProfile(summary: Summary) {
-  if (summary.critical_findings > 0) return { label: 'Severe', color: 'text-rag-red', accent: 'bg-rag-red' }
-  if (summary.high_findings > 0 || summary.total_findings > 20) return { label: 'Moderate', color: 'text-rag-amber', accent: 'bg-rag-amber' }
-  return { label: 'Stable', color: 'text-rag-green', accent: 'bg-rag-green' }
-}
-
-function severityTone(severity: string) {
-  switch (severity) {
-    case 'critical':
-      return 'text-rag-red border-rag-red/20'
-    case 'high':
-      return 'text-rag-amber border-rag-amber/20'
-    case 'medium':
-      return 'text-silver-bright border-accent-silver/20'
-    default:
-      return 'text-rag-green border-rag-green/20'
-  }
-}
-
-// Animation variants
-const containerVariants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: {
-      staggerChildren: 0.1,
-      delayChildren: 0.2,
-    },
-  },
-}
-
-const itemVariants = {
-  hidden: { opacity: 0, y: 15 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.5, ease: [0.19, 1, 0.22, 1] as const },
-  },
-}
+const statusClass: Record<Status, string> = { AVAILABLE: 'available', 'IN PROGRESS': 'progress', COMPLETED: 'completed', OVERDUE: 'overdue' }
 
 export default function Dashboard() {
-  const [summary, setSummary] = useState<Summary>(emptySummary)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [backendConnected, setBackendConnected] = useState<boolean | null>(null)
-  const [lastSync, setLastSync] = useState<string | null>(null)
-  const navigate = useNavigate()
+  const [tasks, setTasks] = useState<Task[]>(readTasks)
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('All')
+  const [priorityFilter, setPriorityFilter] = useState('All')
+  const [sort, setSort] = useState('deadline')
+  const [selected, setSelected] = useState<Task | null>(null)
+  const [editing, setEditing] = useState<Task | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [mobileNav, setMobileNav] = useState(false)
+  const [month, setMonth] = useState(8)
+  const [quote, setQuote] = useState(0)
+  const [toast, setToast] = useState<Toast | null>(null)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [submissionTask, setSubmissionTask] = useState<Task | null>(null)
+  const [deleteTask, setDeleteTask] = useState<Task | null>(null)
+  const [parallax, setParallax] = useState({ x: 0, y: 0 })
 
-  const applySummary = (data: Partial<Summary>) => {
-    setSummary(normalizeSummary(data))
-    setLastSync(new Date().toISOString())
-    setError(null)
+  const notify = (message: string, tone: Toast['tone'] = 'success') => {
+    setToast({ id: Date.now(), message, tone })
+    window.setTimeout(() => setToast(null), 2800)
   }
-
-  useEffect(() => {
-    let cancelled = false
-
-    const load = async () => {
-      try {
-        await getHealth()
-        if (!cancelled) setBackendConnected(true)
-      } catch {
-        if (!cancelled) {
-          setBackendConnected(false)
-          setError('Unable to reach the SecuScan backend')
-          setLoading(false)
-        }
-        return
-      }
-
-      getDashboardSummary()
-        .then((data) => {
-          if (cancelled) return
-          applySummary(data as Partial<Summary>)
-        })
-        .catch((err) => {
-          if (cancelled) return
-          setError(err.message)
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false)
-        })
-    }
-
-    load()
-    const interval = setInterval(load, 10000)
-
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [])
-
-  const handleAbort = async (taskId: string) => {
-    try {
-      await cancelTask(taskId)
-      // Refresh summary immediately
-      const data = await getDashboardSummary() as Summary
-      applySummary(data)
-    } catch (err) {
-      console.error('Failed to abort task:', err)
-    }
+  const updateTasks = (next: Task[]) => {
+    setTasks(next)
+    try { saveTasks(next) } catch { notify('Could not save changes. Please try again.', 'error') }
   }
+  const metrics = useMemo(() => ({
+    total: tasks.length, completed: tasks.filter(t => t.status === 'COMPLETED').length,
+    progress: tasks.filter(t => t.status === 'IN PROGRESS').length, overdue: tasks.filter(t => t.status === 'OVERDUE').length,
+  }), [tasks])
+  const visible = useMemo(() => tasks.filter(t => {
+    const matchesText = `${t.title} ${t.description} ${t.category}`.toLowerCase().includes(query.toLowerCase())
+    const matchesStatus = statusFilter === 'All' || t.status === statusFilter
+    const matchesPriority = priorityFilter === 'All' || t.priority === priorityFilter
+    return matchesText && matchesStatus && matchesPriority
+  }).sort((a, b) => sort === 'priority' ? ({ High: 0, Medium: 1, Low: 2 }[a.priority] - { High: 0, Medium: 1, Low: 2 }[b.priority]) : a.dueDate.localeCompare(b.dueDate)), [tasks, query, statusFilter, priorityFilter, sort])
 
-  const risk = getRiskProfile(summary)
-  const criticalHigh = summary.critical_findings + summary.high_findings
-
-  const progressWidth = summary.scan_activity.total > 0
-    ? Math.max(8, Math.min(100, (summary.scan_activity.completed / summary.scan_activity.total) * 100))
-    : 0
-
-  const statusBadgeClasses = backendConnected === null
-    ? 'border-accent-silver/10 bg-silver/5 text-silver-bright'
-    : backendConnected
-      ? 'border-rag-green/30 bg-rag-green/10 text-rag-green'
-      : 'border-rag-red/30 bg-rag-red/10 text-rag-red'
-  const statusLabel = backendConnected === null
-    ? 'Checking Backend'
-    : backendConnected
-      ? 'Backend Connected'
-      : 'Backend Offline'
+  const changeStatus = (task: Task, status: Status) => {
+    const nextTask = { ...task, status, progress: status === 'COMPLETED' ? 100 : task.progress }
+    updateTasks(tasks.map(t => t.id === task.id ? nextTask : t))
+    setSelected(nextTask)
+    notify(status === 'COMPLETED' ? 'Task marked as completed.' : status === 'IN PROGRESS' ? 'Task started.' : 'Task status updated.')
+  }
+  const removeTask = (id: string) => { updateTasks(tasks.filter(t => t.id !== id)); setSelected(null); setDeleteTask(null); notify('Task deleted successfully.') }
+  const motivation = ['Learn. Build. Improve.', 'Discipline creates results.', 'Think strategically. Execute consistently.', 'Don’t just learn technology. Build with it.']
+  const calendarDays = new Date(2026, month + 1, 0).getDate()
+  const firstDay = new Date(2026, month, 1).getDay()
 
   return (
-    <div className="min-h-screen flex flex-col bg-charcoal-dark selection:bg-silver-bright selection:text-charcoal-dark">
-      <header className="w-full pt-8 pb-6 flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between border-b border-silver-bright/10 mb-8 px-8">
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.8, ease: [0.19, 1, 0.22, 1] }}
-          className="space-y-4"
-        >
-          <div className="bg-rag-amber text-black px-4 py-1 text-xs uppercase tracking-widest inline-block shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            SECUSCAN_WORKSPACE v2.4
-          </div>
-         <h1 className="text-4xl md:text-5xl lg:text-6xl text-silver-bright tracking-tight leading-none whitespace-nowrap font-bold">
-  SecuScan <span className="text-transparent stroke-white" style={{ WebkitTextStroke: '1px var(--accent-silver-bright)' }}>Workspace</span>
-</h1>
-<p className="text-sm font-mono text-silver/60 tracking-wider leading-relaxed mt-2">
-  Central Intelligence Overview // Vulnerabilities: {summary.total_findings} // Threat Level: {risk.label}
-</p>
-        </motion.div>
+    <div className="emperor-app" style={{ '--parallax-x': `${parallax.x}px`, '--parallax-y': `${parallax.y}px` } as React.CSSProperties} onMouseMove={event => setParallax({ x: (event.clientX / window.innerWidth - .5) * 10, y: (event.clientY / window.innerHeight - .5) * 8 })}>
+      <div className="emperor-stars" />
+      <div className="emperor-mountains emperor-mountains-far" /><div className="emperor-mountains emperor-mountains-near" /><div className="emperor-fog" />
+      <aside className={`emperor-sidebar ${mobileNav ? 'open' : ''}`}>
+        <div className="emperor-mark"><div className="crown-mark">✦</div><div><strong>EMPEROR</strong><span>BUILD. LEAD. CREATE.</span></div></div>
+        <nav className="emperor-nav">
+          {[['Dashboard', LayoutDashboard], ['My Tasks', Target], ['Projects', Sparkles], ['Calendar', CalendarDays], ['Progress', Zap], ['Profile', Circle]].map(([label, Icon], i) => (
+            <a href={i === 0 ? '#top' : `#${String(label).toLowerCase().replace(' ', '-')}`} className={i === 0 ? 'active' : ''} key={String(label)} onClick={() => setMobileNav(false)}><Icon size={17} />{label as string}</a>
+          ))}
+        </nav>
+        <div className="sidebar-bottom"><div className="streak"><span>FOCUS STREAK</span><b>07 <small>days</small></b><div className="streak-bar"><i /></div></div><div className="sidebar-user"><div className="avatar">E</div><span><b>Emperor</b><small>Personal workspace</small></span><MoreHorizontal size={16} /></div></div>
+      </aside>
 
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.2, duration: 0.8, ease: [0.19, 1, 0.22, 1] }}
-          className="flex flex-col md:flex-row items-start md:items-center gap-8 md:gap-10"
-        >
-          {/* Integrity Metric - Live Status Panel */}
-          <div className="relative flex items-center gap-5 px-6 py-4 bg-charcoal/80 border border-rag-blue/20 backdrop-blur-sm rounded-sm group transition-all hover:border-rag-blue/40 hover:bg-charcoal/90">
-            {/* Subtle top glow */}
-            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-rag-blue/30 to-transparent opacity-50"></div>
+      <main className="emperor-main" id="top">
+        <header className="emperor-header"><button className="mobile-menu" onClick={() => setMobileNav(!mobileNav)} aria-label="Open menu" aria-expanded={mobileNav}><Menu size={21} /></button><div className="header-context"><span>WORKSPACE</span><b>Task Management</b></div><div className="header-actions"><div className="header-popover-wrap"><button className="icon-button" aria-label="Notifications" onClick={() => { setNotificationsOpen(!notificationsOpen); setProfileOpen(false) }}><Bell size={18} /><i /></button>{notificationsOpen && <div className="header-popover notification-popover"><b>Notifications</b><p><span className="dot blue" /> {metrics.progress} mission{metrics.progress === 1 ? '' : 's'} in progress</p><p><span className="dot red" /> {metrics.overdue} deadline{metrics.overdue === 1 ? '' : 's'} need attention</p></div>}</div><div className="header-popover-wrap"><button className="header-avatar" aria-label="Open profile" onClick={() => { setProfileOpen(!profileOpen); setNotificationsOpen(false) }}>E</button>{profileOpen && <div className="header-popover profile-popover"><b>EMPEROR</b><p>Developer · Builder</p><a href="#profile" onClick={() => setProfileOpen(false)}>View profile</a></div>}</div><ChevronDown size={15} /></div></header>
+        <div className="emperor-content">
+          <section className="hero">
+            <div><span className="eyebrow">THURSDAY, 03 SEPTEMBER 2026</span><h1>Welcome back, <em>Emperor.</em></h1><p>Stay focused. Build consistently. Lead your day.</p></div>
+            <div className="today-progress"><div className="ring"><strong>{metrics.total ? Math.round(metrics.completed / metrics.total * 100) : 0}<small>%</small></strong></div><div><span>TODAY</span><b>{metrics.total - metrics.completed} Tasks Remaining</b><small>{metrics.completed} of {metrics.total} completed</small></div></div>
+          </section>
 
-            <div className="flex flex-col items-end text-right flex-1">
-              <span className="text-[10px] font-black text-silver-bright/80 uppercase tracking-[0.35em] italic mb-2 leading-tight">
-                SYSTEM_STATUS_SYNC
-              </span>
-              <div className="flex items-baseline gap-5 mb-1">
-                <div className="flex items-baseline gap-2.5">
-                  <span className="text-2xl font-mono text-silver-bright font-black tracking-tighter italic leading-none">
-                    {lastSync ? (formatBriefingDate(lastSync).split(',')[0]?.trim().toUpperCase()) : 'INITIALIZING'}
-                  </span>
-                  <span className="text-sm font-mono text-rag-blue/90 font-black italic leading-none">
-                    {lastSync ? (formatBriefingDate(lastSync).split(',')[1]?.trim().toUpperCase()) : '---'}
-                  </span>
-                </div>
-                <div className="h-4 w-px bg-gradient-to-b from-rag-blue/40 via-rag-blue/20 to-transparent self-center mx-0.5"></div>
-                <span className="text-lg font-mono text-rag-blue font-black italic leading-none">
-                  {lastSync ? (formatBriefingDate(lastSync).split(',')[2]?.trim().toUpperCase()) : '00:00'}
-                </span>
-              </div>
-              {lastSync ? (
-                <p className="text-[9px] font-mono text-silver/50 uppercase tracking-[0.2em] whitespace-nowrap">
-                  Last updated: <time dateTime={lastSync} className="text-rag-blue/70">{formatLocaleTime(lastSync)}</time>
-                </p>
-              ) : null}
-            </div>
+          <section className="stats-grid" id="progress">{[['TOTAL TASKS', metrics.total, 'neutral'], ['COMPLETED', metrics.completed, 'green'], ['IN PROGRESS', metrics.progress, 'blue'], ['OVERDUE', metrics.overdue, 'red']].map(([label, value, tone]) => <div className="stat-card" key={String(label)}><span>{label as string}</span><strong className={String(tone)}>{String(value).padStart(2, '0')}</strong><small><span className={`dot ${tone}`} />{label === 'TOTAL TASKS' ? 'Across your workspace' : `${Math.round(Number(value) / Math.max(metrics.total, 1) * 100)}% of all tasks`}</small></div>)}</section>
 
-            <div className="flex items-center justify-center w-12 h-12 bg-charcoal-dark/60 border border-rag-blue/30 rounded-sm text-rag-blue/80 group-hover:text-rag-blue group-hover:bg-charcoal-dark group-hover:border-rag-blue/60 group-hover:shadow-[0_0_12px_rgba(59,130,246,0.3)] transition-all duration-300">
-              <span className="material-symbols-outlined text-xl font-black">terminal</span>
-            </div>
-          </div>
+          <section className="section-heading" id="my-tasks"><div><span className="eyebrow">YOUR WORKSPACE</span><h2>Active missions <span>{visible.length}</span></h2></div><button className="primary-button" onClick={() => { setEditing(null); setShowForm(true) }}><Plus size={17} /> New Task</button></section>
+          <section className="toolbar"><div className="search-box"><Search size={16} /><input placeholder="Search tasks..." value={query} onChange={e => setQuery(e.target.value)} /></div><div className="filter-wrap"><Filter size={15} />{['All', 'AVAILABLE', 'IN PROGRESS', 'COMPLETED', 'OVERDUE'].map(s => <button className={statusFilter === s ? 'selected' : ''} onClick={() => setStatusFilter(s)} key={s}>{s === 'IN PROGRESS' ? 'In Progress' : s.charAt(0) + s.slice(1).toLowerCase()}</button>)}</div><select value={priorityFilter} onChange={e => setPriorityFilter(e.target.value)} aria-label="Filter by priority"><option value="All">All priorities</option><option>High</option><option>Medium</option><option>Low</option></select><select value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort tasks"><option value="deadline">Sort: Deadline</option><option value="priority">Sort: Priority</option></select><SlidersHorizontal size={17} className="mobile-filter" /></section>
 
-        </motion.div>
-      </header>
+          <section className="task-grid">{visible.length === 0 ? <div className="empty-state"><Target size={30} /><h3>Your workspace is clear.</h3><p>Create your first task and start building.</p></div> : visible.map((task, index) => <TiltCard key={task.id}><article className="task-card"><div className="task-top"><span className="task-number">TASK {String(index + 1).padStart(2, '0')}</span><span className={`status-badge ${statusClass[task.status]}`}><i />{task.status}</span><button className="more-button" onClick={() => { setEditing(task); setShowForm(true) }} aria-label={`Edit ${task.title}`} title="Edit task"><MoreHorizontal size={18} /></button></div><div className="task-meta"><span><CalendarDays size={13} /> {formatDate(task.dueDate)}</span><span className={task.status === 'OVERDUE' ? 'danger' : ''}><Clock3 size={13} /> {daysLeft(task.dueDate)}</span></div><h3>{task.title}</h3><p>{task.description}</p><div className="feature-list"><span>KEY FEATURES</span>{task.features.slice(0, 3).map(feature => <b key={feature}><Check size={12} />{feature}</b>)}</div><div className="outcome"><span>EXPECTED OUTCOME</span><p>{task.outcome}</p></div><div className="task-footer"><div className="progress-copy"><span>Progress <b>{task.progress}%</b></span><div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div></div><span className={`priority ${task.priority.toLowerCase()}`}><i />{task.priority}</span></div><button className="view-button" onClick={() => setSelected(task)}>VIEW TASK <ChevronRight size={15} /></button></article></TiltCard>)}</section>
 
-      <main className="flex-1 px-0 pb-20 space-y-12 w-full">
-        <AnimatePresence mode="wait">
-          {loading ? (
-            <motion.section
-              key="loading"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="w-full"
-            >
-              <ExecutiveStatsBar
-                loading
-                riskLabel=""
-                criticalVulns={0}
-                totalFindings={0}
-                scanActivity={0}
-                compliancePercent={0}
-              />
-            </motion.section>
-      ) : error ? (
-            <motion.section
-              key="error"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="mt-12 py-16 flex flex-col items-center justify-center bg-charcoal border border-rag-red/30 rounded-md max-w-3xl mx-auto shadow-lg">
-              <div className="w-12 h-12 rounded-full bg-rag-red/10 flex items-center justify-center mb-4">
-                <span className="material-symbols-outlined text-rag-red text-2xl">warning</span>
-              </div>
-              <h3 className="text-rag-red text-lg font-bold tracking-widest uppercase mb-2">
-                System Offline
-              </h3>
-              <p className="text-silver/80 text-sm font-mono text-center px-8 mb-6 uppercase">
-                {error}. Please verify network connectivity.
-              </p>
-              <button
-                onClick={() => window.location.reload()}
-                className="px-6 py-2 bg-rag-red/20 hover:bg-rag-red border border-rag-red/50 text-white text-xs font-bold uppercase tracking-widest rounded transition-all"
-              >
-                Retry Connection
-              </button>
-            </motion.section>
-          ) : (
-            <motion.div
-              key="content"
-              variants={containerVariants}
-              initial="hidden"
-              animate="visible"
-              className="space-y-24"
-            >
-              {/* Section I: Executive Pulse */}
-              <motion.section variants={itemVariants} className="w-full">
-                <ExecutiveStatsBar
-                  riskLabel={risk.label}
-                  criticalVulns={summary.critical_findings}
-                  totalFindings={summary.total_findings}
-                  scanActivity={summary.scan_activity.total}
-                  compliancePercent={100}
-                  riskNote={summary.critical_findings > 0
-                    ? `Status escalated. ${summary.critical_findings} major vulnerabilities detected on monitored targets.`
-                    : summary.high_findings > 4
-                      ? `Risk exposure has increased following recent scans.`
-                      : "Security posture remains stable. Monitoring systems active across all sectors."}
-                />
-              </motion.section>
-
-              {/* Secondary Layout: Vulnerability & Activity */}
-              <motion.section variants={itemVariants} className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-12 px-8">
-                <div className="space-y-10">
-                  <header>
-                    <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-silver-bright flex items-center gap-3">
-                      <span className="w-2 h-2 border border-accent-silver/40 rotate-45"></span>
-                      Vulnerability Summary
-                    </h3>
-                  </header>
-
-                  <div className="divide-y divide-accent-silver/5 bg-charcoal/30 p-10 border border-accent-silver/5">
-                    {[
-                      ['Critical Risk', summary.critical_findings, 'text-rag-red', summary.critical_findings > 0 ? 'DECREASING' : 'STABLE'],
-                      ['High Severity', summary.high_findings, 'text-rag-amber', 'ACTION REQ'],
-                      ['Medium Alert', summary.medium_findings, 'text-silver-bright', null],
-                      ['Low Exposure', summary.low_findings, 'text-rag-amber/70', null],
-                      ['Informational', summary.info_findings, 'text-silver/70', null],
-                    ].map(([label, count, color, note]) => {
-                      const total = summary.total_findings || 1;
-                      const percentage = (count as number / total) * 100;
-                      return (
-                        <div key={String(label)} className="py-6 flex flex-col gap-4 group first:pt-0 last:pb-0">
-                          <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-4">
-                              <span className={`text-xs font-bold uppercase tracking-[0.15em] ${color}`}>{label}</span>
-                            </div>
-                            <div className="flex items-baseline gap-3">
-                              <span className="text-2xl font-light text-silver-bright font-mono">
-                                {count as number}
-                              </span>
-                              {note ? (
-                                <span className={`min-w-[120px] text-right text-[11px] font-bold uppercase tracking-widest ${note === 'STABLE' ? 'text-rag-green' : 'text-silver/80'}`}>
-                                  {note}
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                          <div className="h-0.5 w-full bg-accent-silver/5 relative overflow-hidden">
-                            <motion.div
-                              initial={{ width: 0 }}
-                              animate={{ width: `${percentage}%` }}
-                              className={`absolute h-full ${String(color).replace('text-', 'bg-')} opacity-30`}
-                            />
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-
-
-                </div>
-
-                <div className="space-y-10">
-                  <header className="flex justify-between items-center">
-                    <div className="flex items-center gap-4">
-                      <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-silver-bright flex items-center gap-3">
-                        <span className="w-2 h-2 border border-accent-silver/40 rotate-45"></span>
-                        Task Activity Feed
-                      </h3>
-                      {summary.scan_activity.running > 0 && (
-                        <div className="flex items-center gap-2 bg-rag-green/10 px-3 py-1 rounded-full border border-rag-green/20">
-                          <span className="w-1.5 h-1.5 rounded-full bg-rag-green animate-pulse shadow-[0_0_4px_rgba(46,213,115,0.6)]" />
-                          <span className="text-[10px] font-bold text-rag-green uppercase tracking-widest">Live</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex gap-6">
-                      <Link className="text-[10px] font-bold text-silver/70 hover:text-silver-bright uppercase tracking-widest transition-all" to={routes.scans}>
-                        Full Schedule
-                      </Link>
-                      <Link className="text-[10px] font-bold text-silver/70 hover:text-silver-bright uppercase tracking-widest transition-all" to={routes.findings}>
-                        Audit Ledger
-                      </Link>
-                    </div>
-                  </header>
-
-                  <div className="space-y-4 bg-transparent">
-                    {summary.recent_tasks.length === 0 && (
-                      <div className="bg-charcoal/30 p-12 text-center border border-accent-silver/5 relative overflow-hidden">
-                        <div className="absolute inset-0 bg-accent-silver/2 animate-pulse" />
-                        <p className="text-[10px] text-silver/70 uppercase tracking-[0.3em] italic relative z-10">
-                          Surveillance systems idle. No activity detected.
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Unified Tasks Feed */}
-                    <div className="grid grid-cols-1 gap-2">
-                      {summary.recent_tasks.map((task) => {
-                        const isActive = task.status === 'running' || task.status === 'queued';
-                        const isFailed = task.status === 'failed';
-                        const isCancelled = task.status === 'cancelled';
-                        const taskInit = formatTaskInit(task.created_at);
-
-                        return (
-                          <motion.div
-                            key={task.id}
-                            whileHover={{ backgroundColor: "rgba(255, 255, 255, 0.04)", x: 4 }}
-                            className={`bg-charcoal px-6 py-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between group border border-accent-silver/5 transition-all duration-300 relative overflow-hidden ${!isActive ? 'opacity-80 hover:opacity-100' : ''}`}
-                          >
-                            <div className={`absolute top-0 left-0 w-1 h-full ${isActive ? 'bg-rag-green/60 shadow-[0_0_8px_var(--rag-green)]' :
-                                isFailed ? 'bg-rag-red/40' :
-                                  isCancelled ? 'bg-silver/20' :
-                                    'bg-rag-green/20'
-                              }`} />
-
-                            <div className="flex items-center gap-5">
-                              <div className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-rag-green animate-pulse shadow-[0_0_8px_rgba(46,213,115,0.4)]' :
-                                  isFailed ? 'bg-rag-red' :
-                                    isCancelled ? 'bg-silver/40' :
-                                      'bg-rag-green'
-                                }`} />
-                              <div>
-                                <div className="flex items-center gap-3">
-                                  <p className="text-[13px] font-semibold text-silver-bright tracking-wide group-hover:text-white transition-colors">
-                                    {displayToolName(task)}
-                                  </p>
-                                  <span className={`text-[8px] font-mono px-1.5 py-0.5 border rounded-sm ${isActive ? 'text-rag-green border-rag-green/20 bg-rag-green/5' :
-                                      isFailed ? 'text-rag-red border-rag-red/20 bg-rag-red/5' :
-                                        'text-silver/70 border-silver/20'
-                                    }`}>
-                                    {task.status.toUpperCase()}
-                                  </span>
-                                </div>
-                                <p className="text-[10px] text-silver/85 uppercase tracking-widest mt-1 flex items-center gap-2 font-mono italic">
-                                  TARGET:: {task.target || 'N/A'}
-                                </p>
-                                <p className="text-[10px] text-silver/80 uppercase tracking-widest mt-1 flex items-center gap-3 font-mono">
-                                  <span>PLUGIN:: {task.plugin_id || 'N/A'}</span>
-                                  <span>TASK:: {task.id.slice(0, 8)}</span>
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-6">
-                              <div className="text-right hidden sm:block">
-                                <span className={`text-[9px] font-bold uppercase tracking-[0.2em] block mb-0.5 ${isActive ? 'text-rag-green' : 'text-silver/80'}`}>
-                                  {isActive ? 'Live Processing' : 'Cycle Log'}
-                                </span>
-                                <span className="text-[9px] font-mono text-silver/80 uppercase block">
-                                  INIT:: {taskInit.date} @ {taskInit.time} {taskInit.tz}
-                                </span>
-                                <span className="text-[9px] font-mono text-silver/70 uppercase block mt-0.5">
-                                  DURATION:: {formatDuration(task.duration_seconds)}
-                                </span>
-                              </div>
-
-                              {isActive ? (
-                                <>
-                                  <div className="h-8 w-px bg-white/5 hidden sm:block" />
-                                  <button
-                                    onClick={() => handleAbort(task.id)}
-                                    className="text-[10px] font-bold text-silver/40 hover:text-rag-red uppercase tracking-widest transition-colors flex items-center gap-2"
-                                  >
-                                    <span className="material-symbols-outlined text-[14px]">cancel</span>
-                                    Abort
-                                  </button>
-                                </>
-                              ) : (
-                                <Link
-                                  to={routePath.task(task.id)}
-                                  className="text-[10px] font-bold text-silver/20 hover:text-silver-bright uppercase tracking-widest transition-colors"
-                                >
-                                  Details
-                                </Link>
-                              )}
-                            </div>
-                          </motion.div>
-                        );
-                      })}
-                    </div>
-
-
-                  </div>
-
-                  {/* Operational Stats: Minimized and Integrated */}
-                  <div className="pt-6 grid grid-cols-1 md:grid-cols-3 gap-px bg-accent-silver/10 border border-accent-silver/5">
-                    <div className="bg-charcoal px-6 py-5">
-                      <span className="text-xs font-bold text-silver/70 uppercase tracking-[0.2em] block mb-2">Total Cycles</span>
-                      <span className="text-2xl font-light text-silver-bright font-mono italic">{summary.scan_activity.total}</span>
-                    </div>
-                    <div className="bg-charcoal px-8 py-8 md:col-span-2">
-                      <div className="flex justify-between items-baseline mb-3">
-                        <span className="text-[10px] font-bold text-silver/80 uppercase tracking-widest">Efficiency Posture</span>
-                        <span className="text-[10px] text-rag-green font-mono uppercase">{progressWidth.toFixed(0)}% SYNCHRONIZED</span>
-                      </div>
-                      <div className="h-1 w-full bg-accent-silver/10 relative overflow-hidden">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${progressWidth}%` }}
-                          transition={{ duration: 1.5, ease: "circOut" }}
-                          className="absolute inset-y-0 left-0 bg-rag-green shadow-[0_0_8px_rgba(46,213,115,0.4)]"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </motion.section>
-
-              {/* Section: Recent Findings Ledger */}
-              <motion.section variants={itemVariants} className="px-8">
-                  <header className="mb-10">
-                    <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-silver-bright flex items-center gap-3">
-                      <span className="w-2 h-2 border border-accent-silver/40 rotate-45"></span>
-                      Recent Audit Findings
-                    </h3>
-                  </header>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                      {summary.recent_findings.length === 0 ? (
-                          <div className="col-span-full bg-charcoal/30 p-12 text-center border border-accent-silver/5">
-                              <p className="text-[10px] text-silver/70 uppercase tracking-[0.3em] italic">No findings detected in recent audits.</p>
-                          </div>
-                      ) : (
-                          summary.recent_findings.map((finding) => (
-                              <div key={finding.id} className="bg-charcoal p-6 border border-accent-silver/5 hover:border-accent-silver/20 transition-all group">
-                                  <div className="flex justify-between items-start mb-4">
-                                      <span className={`text-[9px] font-black px-2 py-0.5 uppercase tracking-widest border ${severityTone(finding.severity)}`}>
-                                          {finding.severity}
-                                      </span>
-                                      <span className="text-[9px] font-mono text-silver/40 uppercase">{formatLocaleDate(finding.discovered_at)}</span>
-                                  </div>
-                                  <h4 className="text-sm font-bold text-silver-bright mb-2 group-hover:text-white transition-colors">{finding.title}</h4>
-                                  <p className="text-[10px] text-silver/60 uppercase tracking-widest font-mono italic truncate">Target: {finding.target}</p>
-                              </div>
-                          ))
-                      )}
-                  </div>
-              </motion.section>
-
-            </motion.div>
-          )}
-        </AnimatePresence>
+          <section className="lower-grid" id="calendar"><div className="calendar-card"><div className="card-heading"><div><span className="eyebrow">PLAN AHEAD</span><h2>Deadline calendar</h2></div><div className="month-control"><button onClick={() => setMonth(Math.max(0, month - 1))} aria-label="Previous month"><ChevronLeft size={16} /></button><b>{new Date(2026, month).toLocaleDateString('en-US', { month: 'long' })} 2026</b><button onClick={() => setMonth(Math.min(11, month + 1))} aria-label="Next month"><ChevronRight size={16} /></button></div></div><div className="calendar-week">{['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => <span key={`${d}${i}`}>{d}</span>)}</div><div className="calendar-grid">{Array.from({ length: firstDay }).map((_, i) => <i key={`blank${i}`} />)}{Array.from({ length: calendarDays }, (_, i) => i + 1).map(day => { const date = `2026-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`; const due = tasks.filter(t => t.dueDate === date); return <button className={due.length ? 'has-task' : ''} key={day} onClick={() => due[0] && setSelected(due[0])} aria-label={`${formatDate(date)}${due.length ? `, ${due.length} task${due.length > 1 ? 's' : ''}` : ''}`}>{day}{due.length > 0 && <i />}</button> })}</div></div><div className="mindset-card" id="projects"><div className="mindset-icon"><Sparkles size={18} /></div><span className="eyebrow">THE EMPEROR MINDSET</span><h2>{motivation[quote]}</h2><p>Your edge is built one deliberate action at a time.</p><button onClick={() => setQuote((quote + 1) % motivation.length)}>Next thought <ChevronRight size={15} /></button></div></section>
+          <section className="profile-section" id="profile"><span className="eyebrow">PERSONAL BRAND</span><h2>EMPEROR</h2><p>Developer · AI/ML Learner · Builder · Future Entrepreneur</p><div><b>{metrics.completed}</b><span>Tasks completed</span><b>{metrics.total ? Math.round(metrics.completed / metrics.total * 100) : 0}%</b><span>Learning progress</span></div></section>
+        </div>
       </main>
-
-      <footer className="px-12 py-12 text-center border-t border-accent-silver/5">
-        <p className="text-[10px] text-silver/70 uppercase tracking-[0.5em] font-light">
-          SecuScan Intelligence Systems • Class 1 Operational View
-        </p>
-      </footer>
+      {selected && <TaskModal task={selected} onClose={() => setSelected(null)} onStatus={changeStatus} onEdit={() => { setEditing(selected); setSelected(null); setShowForm(true) }} onDelete={() => setDeleteTask(selected)} onSubmit={() => setSubmissionTask(selected)} />}
+      {deleteTask && <ConfirmDialog task={deleteTask} onClose={() => setDeleteTask(null)} onConfirm={() => removeTask(deleteTask.id)} />}
+      {submissionTask && <SubmissionDialog task={submissionTask} onClose={() => setSubmissionTask(null)} onSubmit={() => { setSubmissionTask(null); notify('Work submitted successfully.') }} />}
+      {showForm && <TaskForm task={editing} onClose={() => setShowForm(false)} onSave={task => { updateTasks(editing ? tasks.map(t => t.id === task.id ? task : t) : [...tasks, task]); setShowForm(false); notify(editing ? 'Task updated successfully.' : 'Task created successfully.') }} />}
+      {toast && <div className={`toast ${toast.tone}`} role="status"><Check size={15} />{toast.message}</div>}
     </div>
   )
+}
+
+function TiltCard({ children }: { children: React.ReactNode }) {
+  const [tilt, setTilt] = useState({ x: 0, y: 0 })
+  return <div className="tilt-card" onMouseMove={event => { const rect = event.currentTarget.getBoundingClientRect(); setTilt({ x: ((event.clientY - rect.top) / rect.height - .5) * -5, y: ((event.clientX - rect.left) / rect.width - .5) * 5 }) }} onMouseLeave={() => setTilt({ x: 0, y: 0 })} style={{ transform: `perspective(1000px) rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)` }}>{children}</div>
+}
+
+function TaskModal({ task, onClose, onStatus, onEdit, onDelete, onSubmit }: { task: Task; onClose: () => void; onStatus: (task: Task, status: Status) => void; onEdit: () => void; onDelete: () => void; onSubmit: () => void }) {
+  return <div className="modal-backdrop" onMouseDown={e => e.currentTarget === e.target && onClose()}><div className="task-modal"><button className="modal-close" onClick={onClose} aria-label="Close task details"><X size={18} /></button><span className={`status-badge ${statusClass[task.status]}`}><i />{task.status}</span><span className="eyebrow modal-label">TASK DETAILS</span><h2>{task.title}</h2><p className="modal-description">{task.description}</p><div className="detail-columns"><div><span className="detail-label">REQUIREMENTS</span><ul>{task.features.map(f => <li key={f}><Check size={14} />{f}</li>)}</ul></div><div><span className="detail-label">EXPECTED OUTCOME</span><p>{task.outcome}</p><span className="detail-label">DEADLINE</span><p>{formatDate(task.dueDate)} · {daysLeft(task.dueDate)}</p></div></div><div className="modal-progress"><span>Progress <b>{task.progress}%</b></span><div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div></div><div className="modal-actions"><button onClick={() => onStatus(task, task.status === 'COMPLETED' ? 'IN PROGRESS' : task.status === 'AVAILABLE' ? 'IN PROGRESS' : 'COMPLETED')} className="primary-button">{task.status === 'COMPLETED' ? 'CONTINUE' : task.status === 'AVAILABLE' ? 'START TASK' : 'MARK COMPLETE'}</button><button className="secondary-button" onClick={onSubmit}>SUBMIT WORK</button><button className="secondary-button" onClick={onEdit}><Pencil size={15} /> Edit</button><button className="delete-button" onClick={onDelete} aria-label="Delete task"><Trash2 size={15} /></button></div></div></div>
+}
+
+function TaskForm({ task, onClose, onSave }: { task: Task | null; onClose: () => void; onSave: (task: Task) => void }) {
+  const [form, setForm] = useState<Task>(task || { id: crypto.randomUUID(), title: '', description: '', features: ['Thoughtful execution'], outcome: '', dueDate: '2026-09-30', status: 'AVAILABLE', priority: 'Medium', progress: 0, category: 'Product' })
+  const [error, setError] = useState('')
+  const set = (key: keyof Task, value: string) => setForm({ ...form, [key]: value })
+  return <div className="modal-backdrop"><form className="task-modal form-modal" onSubmit={e => { e.preventDefault(); if (!form.title.trim()) { setError('Add a task title to continue.'); return } if (!form.description.trim()) { setError('Add a short description to continue.'); return } if (!form.dueDate || Number.isNaN(new Date(`${form.dueDate}T12:00:00`).getTime())) { setError('Choose a valid deadline.'); return } onSave({ ...form, title: form.title.trim(), description: form.description.trim() }) }}><button type="button" className="modal-close" onClick={onClose} aria-label="Close task form"><X size={18} /></button><span className="eyebrow modal-label">{task ? 'REFINE MISSION' : 'NEW MISSION'}</span><h2>{task ? 'Edit task' : 'Create a task'}</h2>{error && <p className="form-error" role="alert">{error}</p>}<label>Task title<input required value={form.title} onChange={e => { setError(''); set('title', e.target.value) }} placeholder="e.g. Launch landing page" /></label><label>Description<textarea required value={form.description} onChange={e => { setError(''); set('description', e.target.value) }} placeholder="What does success look like?" /></label><div className="form-row"><label>Priority<select value={form.priority} onChange={e => set('priority', e.target.value as Priority)}><option>Low</option><option>Medium</option><option>High</option></select></label><label>Due date<input type="date" value={form.dueDate} onChange={e => set('dueDate', e.target.value)} /></label></div><div className="form-row"><label>Category<input value={form.category} onChange={e => set('category', e.target.value)} /></label><label>Status<select value={form.status} onChange={e => set('status', e.target.value as Status)}><option>AVAILABLE</option><option>IN PROGRESS</option><option>COMPLETED</option><option>OVERDUE</option></select></label></div><div className="modal-actions"><button type="submit" className="primary-button">{task ? 'SAVE CHANGES' : 'CREATE TASK'}</button><button type="button" className="secondary-button" onClick={onClose}>Cancel</button></div></form></div>
+}
+
+function ConfirmDialog({ task, onClose, onConfirm }: { task: Task; onClose: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop"><div className="task-modal confirm-modal"><button className="modal-close" onClick={onClose} aria-label="Close confirmation"><X size={18} /></button><span className="eyebrow modal-label">DESTRUCTIVE ACTION</span><h2>Delete this task?</h2><p className="modal-description">“{task.title}” will be permanently removed from your workspace.</p><div className="modal-actions"><button className="delete-confirm" onClick={onConfirm}>DELETE TASK</button><button className="secondary-button" onClick={onClose}>Keep task</button></div></div></div>
+}
+
+function SubmissionDialog({ task, onClose, onSubmit }: { task: Task; onClose: () => void; onSubmit: () => void }) {
+  return <div className="modal-backdrop"><form className="task-modal form-modal" onSubmit={e => { e.preventDefault(); onSubmit() }}><button type="button" className="modal-close" onClick={onClose} aria-label="Close submission form"><X size={18} /></button><span className="eyebrow modal-label">SUBMISSION</span><h2>Submit your work</h2><p className="modal-description">Attach a link or note for <b>{task.title}</b>.</p><label>Project link<input required type="url" placeholder="https://..." /></label><label>Notes<textarea required placeholder="What did you build?" /></label><div className="modal-actions"><button className="primary-button" type="submit">SUBMIT WORK</button><button type="button" className="secondary-button" onClick={onClose}>Cancel</button></div></form></div>
 }

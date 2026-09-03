@@ -7,6 +7,7 @@ import React, {
   useMemo,
   ReactNode,
 } from 'react'
+import { useLocation } from 'react-router-dom'
 import { checkAuthSession, logoutSession, AUTH_REQUIRED_EVENT } from '../api'
 
 /**
@@ -47,9 +48,14 @@ const AuthContext = createContext<AuthContextValue>(defaultValue)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
+  const { pathname } = useLocation()
 
   // Derive the initial session state from the backend cookie.
   useEffect(() => {
+    if (pathname === '/') {
+      setLoading(false)
+      return
+    }
     let cancelled = false
     checkAuthSession().then((authenticated) => {
       if (!cancelled) {
@@ -60,7 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [pathname])
 
   // A 401 anywhere invalidates the session.
   useEffect(() => {
